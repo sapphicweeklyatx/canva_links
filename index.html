@@ -57,7 +57,10 @@
   .addform { margin-top: 14px; padding: 14px; border: 1px dashed #F1A9CF; border-radius: 10px; background: #FFF0F8; display: grid; gap: 10px; }
   .addform[hidden] { display: none; }
   .addform .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  @media (max-width: 600px) { .addform .row { grid-template-columns: 1fr; } }
+  .addform .row.three { grid-template-columns: 1.4fr 1.2fr 1fr; }
+  .addform input[type="date"] { width: 100%; font: 15px Inter, sans-serif; padding: 9px 12px; border: 1px solid #d8c3cf; border-radius: 8px; }
+  .pastnote { background: #F4F0F7; border: 1px solid #E2D6EC; color: #4A3A5A; border-radius: 10px; padding: 10px 14px; font-size: 13.5px; margin-bottom: 14px; }
+  @media (max-width: 600px) { .addform .row, .addform .row.three { grid-template-columns: 1fr; } }
 
   .event-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; margin-bottom: 14px; }
   .event-meta .info { font-size: 14px; color: var(--muted); }
@@ -135,10 +138,10 @@
         </div>
         <button type="button" class="btn secondary" id="addToggle">+ Add event</button>
       </div>
-      <div class="hint" id="pickHint">Upcoming events come from the website. Use "Add event" for anything that isn't on the website yet.</div>
+      <div class="hint" id="pickHint">Upcoming events come from the website. Use "Add event" for anything that isn't on the website yet. Past events stay for 30 days, and everything is deleted 90 days after an event.</div>
 
       <form class="addform" id="addForm" hidden>
-        <div class="row">
+        <div class="row three">
           <div>
             <label class="lbl" for="newTitle">Event name</label>
             <input id="newTitle" type="text" maxlength="150" placeholder="e.g., Sapphic Holiday Market">
@@ -146,6 +149,10 @@
           <div>
             <label class="lbl" for="newLocation">Location</label>
             <input id="newLocation" type="text" maxlength="200" placeholder="e.g., Cheer Up Charlies">
+          </div>
+          <div>
+            <label class="lbl" for="newDate">Date</label>
+            <input id="newDate" type="date">
           </div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -195,6 +202,9 @@
   var customEvents = []; // from the database
   var links = {};        // links[event_key][platform] = { url, updated_at }
   var notes = {};        // notes[event_key] = { note, updated_at }
+  var eventInfo = {};    // eventInfo[event_key] = { title, place, event_date } (remembered by the database)
+  var PAST_DAYS = 30;    // how long past events stay in the dropdown
+  var DELETE_DAYS = 90;  // must match cl_cleanup() in the database
   var selected = "";
 
   var $ = function (id) { return document.getElementById(id); };
@@ -298,6 +308,8 @@
       });
       notes = {};
       (res[1].notes || []).forEach(function (n) { notes[n.event_key] = { note: n.note, updated_at: n.updated_at }; });
+      eventInfo = {};
+      (res[1].event_info || []).forEach(function (i) { eventInfo[i.event_key] = i; });
       renderPicker();
       // Don't wipe a field someone is typing in during a background refresh
       var active = document.activeElement;
@@ -313,20 +325,47 @@
     return PLATFORMS.filter(function (p) { return m[p.key]; }).length;
   }
 
+  function today0() { var t = new Date(); t.setHours(0, 0, 0, 0); return t; }
+  function daysAgo(n) { var t = today0(); t.setDate(t.getDate() - n); return t; }
+  function shortDate(v) { var d = parseDate(v); return d ? MONTHS[d.getMonth()] + " " + d.getDate() : ""; }
+  function opt(key, label) {
+    return '<option value="' + esc(key) + '">' + esc(label) + " (" + countFor(key) + "/" + PLATFORMS.length + ")</option>";
+  }
+
+  // Past events: website events the database remembers, plus added events, dated in the last PAST_DAYS days
+  function pastEvents() {
+    var t = today0(), from = daysAgo(PAST_DAYS), upcomingIds = {}, out = [];
+    siteEvents.forEach(function (e) { upcomingIds[e.id] = true; });
+    Object.keys(eventInfo).forEach(function (k) {
+      var i = eventInfo[k], d = parseDate(i.event_date);
+      if (k.indexOf("custom:") === 0 || upcomingIds[k] || !d || d >= t || d < from) return;
+      out.push({ key: k, title: i.title, place: i.place, date: i.event_date, custom: false });
+    });
+    customEvents.forEach(function (e) {
+      var d = parseDate(e.event_date);
+      if (d && d < t && d >= from) out.push({ key: e.id, title: e.title, place: e.location, date: e.event_date, custom: true });
+    });
+    return out.sort(function (a, b) { return a.date < b.date ? 1 : -1; });
+  }
+
   function renderPicker() {
-    var pick = $("eventPick");
+    var pick = $("eventPick"), t = today0();
     var html = '<option value="">Choose an event...</option>';
     if (siteEvents.length) {
       html += '<optgroup label="Upcoming on the website">' + siteEvents.map(function (e) {
-        var d = parseDate(e.date);
-        return '<option value="' + esc(e.id) + '">' + esc(e.title) + (d ? " - " + MONTHS[d.getMonth()] + " " + d.getDate() : "") +
-          " (" + countFor(e.id) + "/" + PLATFORMS.length + ")</option>";
+        return opt(e.id, e.title + (e.date ? " - " + shortDate(e.date) : ""));
       }).join("") + "</optgroup>";
     }
-    if (customEvents.length) {
-      html += '<optgroup label="Added here">' + customEvents.map(function (e) {
-        return '<option value="' + esc(e.id) + '">' + esc(e.title) + (e.location ? " - " + esc(e.location) : "") +
-          " (" + countFor(e.id) + "/" + PLATFORMS.length + ")</option>";
+    var added = customEvents.filter(function (e) { var d = parseDate(e.event_date); return !d || d >= t; });
+    if (added.length) {
+      html += '<optgroup label="Added here">' + added.map(function (e) {
+        return opt(e.id, e.title + (e.event_date ? " - " + shortDate(e.event_date) : "") + (e.location ? " - " + e.location : ""));
+      }).join("") + "</optgroup>";
+    }
+    var past = pastEvents();
+    if (past.length) {
+      html += '<optgroup label="Past events (last ' + PAST_DAYS + ' days)">' + past.map(function (e) {
+        return opt(e.key, e.title + " - " + shortDate(e.date));
       }).join("") + "</optgroup>";
     }
     pick.innerHTML = html;
@@ -337,7 +376,8 @@
   function findEvent(key) {
     var e;
     siteEvents.some(function (x) { if (x.id === key) { e = { title: x.title, place: x.venue, date: x.date, custom: false }; return true; } });
-    if (!e) customEvents.some(function (x) { if (x.id === key) { e = { title: x.title, place: x.location, custom: true }; return true; } });
+    if (!e) customEvents.some(function (x) { if (x.id === key) { e = { title: x.title, place: x.location, date: x.event_date, custom: true }; return true; } });
+    if (!e && eventInfo[key]) { var i = eventInfo[key]; e = { title: i.title, place: i.place, date: i.event_date, custom: false }; }
     return e;
   }
 
@@ -350,7 +390,13 @@
     var when = d ? d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }) : "";
     var m = links[selected] || {};
 
-    var html = '<div class="event-meta"><div class="info"><strong>' + esc(ev.title) + "</strong>" +
+    var html = "";
+    if (d && d < today0()) {
+      var gone = new Date(d); gone.setDate(gone.getDate() + DELETE_DAYS);
+      html += '<div class="pastnote">This event has passed. Its links and notes will be deleted on ' +
+        esc(gone.toLocaleDateString("en-US", { month: "long", day: "numeric" })) + ".</div>";
+    }
+    html += '<div class="event-meta"><div class="info"><strong>' + esc(ev.title) + "</strong>" +
       esc([ev.place, when].filter(Boolean).join(" · ")) + "</div>" +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
       '<button type="button" class="btn small" id="copyAll">Copy all links</button>' +
@@ -400,7 +446,9 @@
     if (url && !isCanva(url)) { setStatus(platform, "That doesn't look like a Canva link. Use Share > Copy link in Canva.", "err"); return; }
 
     setStatus(platform, url ? "Saving..." : "Removing...");
-    rpc("cl_set_link", { p_pin: pin, p_event_key: key, p_platform: platform, p_url: url }).then(function (row) {
+    var info = findEvent(key) || {};
+    rpc("cl_set_link", { p_pin: pin, p_event_key: key, p_platform: platform, p_url: url,
+                         p_title: info.title || null, p_place: info.place || null, p_date: info.date || null }).then(function (row) {
       links[key] = links[key] || {};
       if (url && row) links[key][platform] = { url: row.url, updated_at: row.updated_at };
       else delete links[key][platform];
@@ -420,7 +468,9 @@
     if ((current ? current.note : "") === text) return;
     var st = $("noteStatus");
     if (st) { st.textContent = "Saving..."; st.className = "status"; }
-    rpc("cl_set_note", { p_pin: pin, p_event_key: key, p_note: text }).then(function (row) {
+    var info = findEvent(key) || {};
+    rpc("cl_set_note", { p_pin: pin, p_event_key: key, p_note: text,
+                         p_title: info.title || null, p_place: info.place || null, p_date: info.date || null }).then(function (row) {
       if (text && row) notes[key] = { note: row.note, updated_at: row.updated_at };
       else delete notes[key];
       if (key === selected) renderLinks();
@@ -505,19 +555,23 @@
     $("addForm").hidden = true;
     $("newTitle").value = "";
     $("newLocation").value = "";
+    $("newDate").value = "";
   });
   $("addForm").addEventListener("submit", function (e) {
     e.preventDefault();
     var title = $("newTitle").value.trim();
     var place = $("newLocation").value.trim();
+    var date = $("newDate").value;
     if (!title) { toast("Add an event name"); $("newTitle").focus(); return; }
+    if (!date) { toast("Add the event date"); $("newDate").focus(); return; }
     $("addSave").disabled = true;
-    rpc("cl_add_event", { p_pin: pin, p_title: title, p_location: place }).then(function (row) {
+    rpc("cl_add_event", { p_pin: pin, p_title: title, p_location: place, p_date: date }).then(function (row) {
       customEvents.unshift(row);
       selected = row.id;
       $("addForm").hidden = true;
       $("newTitle").value = "";
       $("newLocation").value = "";
+      $("newDate").value = "";
       renderPicker();
       renderLinks();
       toast("Event added");
