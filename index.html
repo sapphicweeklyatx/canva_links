@@ -206,6 +206,9 @@
   var PAST_DAYS = 30;    // how long past events stay in the dropdown
   var DELETE_DAYS = 90;  // must match cl_cleanup() in the database
   var selected = "";
+  // Opened from the listing generator with ?event=<id>: select that event once the list loads
+  var pendingEvent = "";
+  try { pendingEvent = new URLSearchParams(location.search).get("event") || ""; } catch (e) {}
 
   var $ = function (id) { return document.getElementById(id); };
   var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -310,6 +313,10 @@
       (res[1].notes || []).forEach(function (n) { notes[n.event_key] = { note: n.note, updated_at: n.updated_at }; });
       eventInfo = {};
       (res[1].event_info || []).forEach(function (i) { eventInfo[i.event_key] = i; });
+      if (pendingEvent) {
+        if (findEvent(pendingEvent)) selected = pendingEvent;
+        pendingEvent = "";
+      }
       renderPicker();
       // Don't wipe a field someone is typing in during a background refresh
       var active = document.activeElement;
