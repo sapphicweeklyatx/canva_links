@@ -83,6 +83,10 @@
   .status.ok { color: var(--ok); }
   .status.err { color: #B00020; }
 
+  .notes { margin-top: 14px; border: 1px solid var(--line); border-radius: 12px; padding: 14px; background: #fff; }
+  .notes.filled { border-color: #F5A3CD; background: #FFFAFD; }
+  .notes textarea { width: 100%; min-height: 96px; resize: vertical; font: 14px/1.5 Inter, sans-serif; padding: 10px 12px; border: 1px solid #d8c3cf; border-radius: 8px; color: var(--ink); }
+  .notes textarea:focus { outline: 2px solid var(--pink); outline-offset: 1px; border-color: var(--pink); }
   .empty { text-align: center; color: var(--muted); padding: 30px 10px; font-size: 15px; }
 
   .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px); background: var(--ink); color: #fff; padding: 10px 18px; border-radius: 999px; font-size: 14px; opacity: 0; transition: opacity .2s, transform .2s; pointer-events: none; z-index: 50; }
@@ -190,6 +194,7 @@
   var siteEvents = [];   // from events.json
   var customEvents = []; // from the database
   var links = {};        // links[event_key][platform] = { url, updated_at }
+  var notes = {};        // notes[event_key] = { note, updated_at }
   var selected = "";
 
   var $ = function (id) { return document.getElementById(id); };
@@ -291,10 +296,12 @@
       (res[1].links || []).forEach(function (l) {
         (links[l.event_key] = links[l.event_key] || {})[l.platform] = { url: l.url, updated_at: l.updated_at };
       });
+      notes = {};
+      (res[1].notes || []).forEach(function (n) { notes[n.event_key] = { note: n.note, updated_at: n.updated_at }; });
       renderPicker();
       // Don't wipe a field someone is typing in during a background refresh
       var active = document.activeElement;
-      if (!(quiet && active && active.dataset && active.dataset.platform)) renderLinks();
+      if (!(quiet && active && active.dataset && (active.dataset.platform || active.id === "noteBox"))) renderLinks();
     }).catch(function (e) {
       if (handlePinError(e)) return;
       if (!quiet) toast(e.message);
@@ -365,6 +372,14 @@
         "</div>";
     }).join("") + "</div>";
 
+    var n = notes[selected];
+    html += '<div class="notes' + (n ? " filled" : "") + '">' +
+      '<div class="slot-head"><label class="name" for="noteBox">Notes</label>' +
+      '<button type="button" class="iconbtn primary" id="copyNote" title="Copy notes" aria-label="Copy notes"' + (n ? "" : " disabled") + ">" + ICON_COPY + "</button></div>" +
+      '<textarea id="noteBox" maxlength="2000" placeholder="Anything else the team should know: which version to use, extra sizes, deadlines, captions...">' + esc(n ? n.note : "") + "</textarea>" +
+      '<div class="status" id="noteStatus">' + (n ? "Saved " + esc(fmtWhen(n.updated_at)) : "Saves when you click outside the box") + "</div>" +
+      "</div>";
+
     body.innerHTML = html;
   }
 
@@ -398,6 +413,25 @@
     });
   }
 
+  function saveNote(text) {
+    var key = selected;
+    var current = notes[key];
+    text = text.trim();
+    if ((current ? current.note : "") === text) return;
+    var st = $("noteStatus");
+    if (st) { st.textContent = "Saving..."; st.className = "status"; }
+    rpc("cl_set_note", { p_pin: pin, p_event_key: key, p_note: text }).then(function (row) {
+      if (text && row) notes[key] = { note: row.note, updated_at: row.updated_at };
+      else delete notes[key];
+      if (key === selected) renderLinks();
+      toast(text ? "Notes saved" : "Notes cleared");
+    }).catch(function (e) {
+      if (handlePinError(e)) return;
+      var st2 = $("noteStatus");
+      if (st2) { st2.textContent = e.message; st2.className = "status err"; }
+    });
+  }
+
   function copyText(text, msg) {
     var done = function () { toast(msg); };
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -419,6 +453,7 @@
   });
 
   $("linksBody").addEventListener("change", function (e) {
+    if (e.target.id === "noteBox") { saveNote(e.target.value); return; }
     var input = e.target.closest("input[data-platform]");
     if (input) saveLink(input.dataset.platform, input.value);
   });
@@ -442,9 +477,12 @@
     } else if (b.dataset.clear && m[b.dataset.clear]) {
       var p = PLATFORMS.filter(function (x) { return x.key === b.dataset.clear; })[0];
       if (confirm("Remove the " + p.name + " link?")) saveLink(b.dataset.clear, "");
+    } else if (b.id === "copyNote" && notes[selected]) {
+      copyText(notes[selected].note, "Notes copied");
     } else if (b.id === "copyAll") {
       var ev = findEvent(selected);
       var lines = PLATFORMS.filter(function (p) { return m[p.key]; }).map(function (p) { return p.name + ": " + m[p.key].url; });
+      if (notes[selected]) lines.push("Notes: " + notes[selected].note);
       if (!lines.length) { toast("No links added yet"); return; }
       copyText(ev.title + "\n" + lines.join("\n"), "All links copied");
     } else if (b.id === "deleteEvent") {
